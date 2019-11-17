@@ -1,0 +1,3 @@
+stock_name,year,loss,params,iteration,windows_size,train_time
+000001.SS,1991,29.957450188530817,{'windows_size': 6},1,6,16.3091194
+000001.SS,1991,46.72671127319336,{'windows_size': 1},2,1,9.368255600000001
