@@ -61,8 +61,36 @@ stock_name = '000001.SS'  # SSE Composite Index
 # df_org = yf.download(stock_name, start="1991-01-01", end="2016-12-31", interval="1wk")
 # df_org.to_csv(f'{base_dir}/{stock_name}.csv')
 df_org = pd.read_csv(f'{data_dir}/{stock_name}.csv', parse_dates=['Date'])
+df_org = df_org.sort_values('Date')
 df_org.reset_index(inplace=True)
 df_org = df_org[['Date', 'Close', 'Open', 'High', 'Low', 'Adj Close', 'Volume']]
+
+
+# endregion
+
+# region Data ploting
+def plot_ohlc(df):
+    trace = go.Ohlc(x=df['Date'],
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'],
+                    increasing=dict(line=dict(color='#58FA58')),
+                    decreasing=dict(line=dict(color='#FA5858')))
+
+    layout = {
+        'title': f'{stock_name} Historical Price',
+        'xaxis': {'title': 'Date',
+                  'rangeslider': {'visible': False}},
+        'yaxis': {'title': f'Price'}
+    }
+
+    data = [trace]
+
+    fig = go.Figure(data=data, layout=layout)
+    fig.show()
+
+plot_ohlc(df_org)
 # endregion
 
 # region Create csv result file
@@ -125,6 +153,8 @@ def get_model(input_dim, window_size, output_dim, lstm_layer_count=5, drop_rate=
     model.summary()
 
     return model
+
+
 # endregion
 
 # region Error metric
@@ -148,11 +178,13 @@ def relative_root_mean_square_error(y_true, y_pred):
     res = math.sqrt(res)
 
     return res
+
+
 # endregion
 
 # region Data preprocessing
 # reprocessing data
-def next_window(df, i, windows_size, prediction_size):
+def next_window(df, i, windows_size, prediction_size, input_col, output_col, time_col):
     '''Generates the next data window from the given index location i'''
     window = df[i: i + windows_size + prediction_size]
     x = window[input_col][:-prediction_size]
@@ -161,7 +193,7 @@ def next_window(df, i, windows_size, prediction_size):
     return x, y, y_time
 
 
-def preprocessing_data(df, windows_size, prediction_size):
+def preprocessing_data(df, windows_size, prediction_size, input_col, output_col, time_col):
     '''
     Create x, y train data windows
     Warning: batch method, not generative, make sure you have enough memory to
@@ -171,7 +203,7 @@ def preprocessing_data(df, windows_size, prediction_size):
     data_y = []
     data_y_time = []
     for i in range(len(df) - windows_size - prediction_size):
-        x, y, y_time = next_window(df, i, windows_size, prediction_size)
+        x, y, y_time = next_window(df, i, windows_size, prediction_size, input_col, output_col, time_col)
         data_x.append(x.values)
         data_y.append(y.values)
         data_y_time.append(y_time)
@@ -185,6 +217,8 @@ def split_train_test_data(X, y):
     X_train, X_valid, y_train, y_valid = train_test_split(X, y, test_size=0.2, shuffle=False)
 
     return X_train, y_train, X_valid, y_valid
+
+
 # endregion
 
 # region Model train
@@ -204,11 +238,13 @@ def train_model(model, X_train, y_train, X_valid, y_valid):
         shuffle=False)
 
     return history
+
+
 # endregion
 
 # region Test model
-def test_model(model, test_data, window_size, prediction_size):
-    X, y, time = preprocessing_data(test_data, window_size, prediction_size)
+def test_model(model, test_data, window_size, prediction_size, input_col, output_col, time_col):
+    X, y, time = preprocessing_data(test_data, window_size, prediction_size, input_col, output_col, time_col)
     y = y.reshape((y.shape[0], y.shape[1]))
 
     y_pred = model.predict(X)
@@ -259,6 +295,7 @@ def plot_test_result(test_result):
     fig = go.Figure(data=data, layout=layout)
     fig.show()
 
+
 # endregion
 
 
@@ -279,7 +316,8 @@ def objective(params):
 
     # Handle data
     df.describe()
-    X, y, time = preprocessing_data(df, windows_size, prediction_size)
+    # TODO: smoothing ddata
+    X, y, time = preprocessing_data(df, windows_size, prediction_size, input_col, output_col, time_col)
 
     # Reshape data
     y = y.reshape((y.shape[0], y.shape[1]))
@@ -292,7 +330,8 @@ def objective(params):
     run_time = timer() - start
 
     # Test generated loss
-    test_result = test_model(complex_model, df, windows_size, prediction_size)
+    # TODO: not normalize test result
+    test_result = test_model(complex_model, df, windows_size, prediction_size, input_col, output_col, time_col)
     test_result = test_result.join(df_org.set_index('Date'))
 
     mae = mean_absolute_error(test_result['Close'], test_result['Prediction'])
