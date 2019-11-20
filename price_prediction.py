@@ -10,7 +10,6 @@ Original file is located at
 """
 # region Import
 # Data download
-import yfinance as yf
 # Import basic
 import csv
 import math
@@ -19,6 +18,7 @@ import warnings
 # Init google drive
 # from google.colab import drive
 from datetime import datetime
+from timeit import default_timer as timer
 
 import numpy as np
 import pandas as pd
@@ -26,19 +26,19 @@ import pandas as pd
 import plotly.graph_objs as go
 # IPython
 from IPython.display import display
+# Hyperopt bayesian optimization
+from hyperopt import hp, Trials, tpe, fmin, STATUS_OK, partial
 # Keras
+from keras import Sequential
 from keras.activations import softmax
 from keras.callbacks import EarlyStopping
 from keras.initializers import Ones
-from keras.layers import LSTM, Dropout, Input, Dense
+from keras.layers import LSTM, Dropout, Input
 from keras.models import Model
 # SKLearn
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
-# Hyperopt bayesian optimization
-from hyperopt import hp, Trials, tpe, fmin, STATUS_OK
-from timeit import default_timer as timer
 
 # endregion
 
@@ -88,7 +88,9 @@ def plot_ohlc(df):
     data = [trace]
 
     fig = go.Figure(data=data, layout=layout)
-    fig.show()
+    fig.write_html(f'ohlc_{stock_name}.html', auto_open=True)
+    # fig.show()
+
 
 plot_ohlc(df_org)
 # endregion
@@ -126,7 +128,7 @@ prediction_size = 1
 # For each time model is train, the first is display
 sample_display_test_size = 5
 # Max bayer iteration
-bayer_max_evals = 10
+bayer_max_evals = 1
 
 
 # endregion
@@ -138,19 +140,32 @@ def softMaxAxis1(x):
 
 
 def get_model(input_dim, window_size, output_dim, lstm_layer_count=5, drop_rate=0.2):
-    x = Input(shape=(window_size, input_dim))
-    lstm = LSTM(units=100, return_sequences=True, kernel_initializer=Ones())(x)
-    lstm = Dropout(rate=drop_rate)(lstm)
+    # x = Input(shape=(window_size, input_dim))
+    # lstm = LSTM(units=100, return_sequences=True, kernel_initializer=Ones())(x)
+    # lstm = Dropout(rate=drop_rate)(lstm)
+    #
+    # for i in range(lstm_layer_count - 1):
+    #     lstm = LSTM(units=100, return_sequences=True, kernel_initializer=Ones())(lstm)
+    #     lstm = Dropout(rate=drop_rate)(lstm)
+    #
+    # predictions = LSTM(units=output_dim, activation=softMaxAxis1)(lstm)
+    #
+    # model = Model(inputs=x, outputs=predictions)
+    # model.compile(loss='mae', optimizer='adam', metrics=['accuracy'])
+    # model.summary()
 
-    for i in range(lstm_layer_count - 1):
-        lstm = LSTM(units=100, return_sequences=True, kernel_initializer=Ones())(lstm)
-        lstm = Dropout(rate=drop_rate)(lstm)
-
-    predictions = LSTM(units=output_dim, activation=softMaxAxis1)(lstm)
-
-    model = Model(inputs=x, outputs=predictions)
+    model = Sequential()
+    model.add(LSTM(units=100, input_shape=(window_size, input_dim), return_sequences=True, kernel_initializer=Ones()))
+    model.add(Dropout(rate=0.2))
+    model.add(LSTM(units=100, return_sequences=True))
+    model.add(Dropout(rate=0.2))
+    model.add(LSTM(units=100, return_sequences=True))
+    model.add(Dropout(rate=0.2))
+    model.add(LSTM(units=100, return_sequences=True))
+    model.add(Dropout(rate=0.2))
+    model.add(LSTM(output_dim, activation=softMaxAxis1))
     model.compile(loss='mae', optimizer='adam', metrics=['accuracy'])
-    model.summary()
+
 
     return model
 
@@ -192,6 +207,8 @@ def next_window(df, i, windows_size, prediction_size, input_col, output_col, tim
     y_time = window[time_col][-prediction_size:]
     return x, y, y_time
 
+def smooting_data(df, window_size):
+    return df.ewm(span=window_size).mean()
 
 def preprocessing_data(df, windows_size, prediction_size, input_col, output_col, time_col):
     '''
@@ -199,6 +216,8 @@ def preprocessing_data(df, windows_size, prediction_size, input_col, output_col,
     Warning: batch method, not generative, make sure you have enough memory to
     load data, otherwise use generate_training_window() method.
     '''
+
+
     data_x = []
     data_y = []
     data_y_time = []
@@ -300,7 +319,7 @@ def plot_test_result(test_result):
 
 
 # region bayers
-def objective(params):
+def objective(params, df):
     # Keep track of evals
     global ITERATION
 
@@ -310,13 +329,14 @@ def objective(params):
     windows_size = int(params['windows_size'])
     print(f'Window size is {windows_size}')
 
-    complex_model = get_model(input_dim, windows_size, output_dim)
+    model = get_model(input_dim, windows_size, output_dim)
 
     start = timer()
 
     # Handle data
     df.describe()
     # TODO: smoothing ddata
+    df = smooting_data(df, windows_size)
     X, y, time = preprocessing_data(df, windows_size, prediction_size, input_col, output_col, time_col)
 
     # Reshape data
@@ -325,13 +345,12 @@ def objective(params):
     X_train, y_train, X_valid, y_valid = split_train_test_data(X, y)
 
     # Perform n_train
-    history = train_model(complex_model, X_train, y_train, X_valid, y_valid)
+    history = train_model(model, X_train, y_train, X_valid, y_valid)
 
     run_time = timer() - start
 
     # Test generated loss
-    # TODO: not normalize test result
-    test_result = test_model(complex_model, df, windows_size, prediction_size, input_col, output_col, time_col)
+    test_result = test_model(model, df, windows_size, prediction_size, input_col, output_col, time_col)
     test_result = test_result.join(df_org.set_index('Date'))
 
     mae = mean_absolute_error(test_result['Close'], test_result['Prediction'])
@@ -345,7 +364,7 @@ def objective(params):
     print(f'MAPE = {mape}')
     print(f'RRMSE = {rrmse}')
 
-    display(test_result.head(sample_display_test_size))
+    plot_test_result(test_result)
     loss = mae
 
     # write row
@@ -382,7 +401,6 @@ for year in range(start_year, end_year + 1):
     if df.shape[0] < 10:
         continue
 
-    display(df.head())
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_cols = scaler.fit_transform(df[input_col])
     df[input_col] = scaled_cols
@@ -399,14 +417,15 @@ for year in range(start_year, end_year + 1):
 
     ITERATION = 0
 
-    bayes_best = fmin(fn=objective, space=param_grid,
+    fmin_objective = partial(objective, df=df)
+    bayes_best = fmin(fn=fmin_objective, space=param_grid,
                       algo=bayes_algo, trials=bayes_trials,
                       max_evals=bayer_max_evals)
 
     windows_size_best.append([year, bayes_best])
     print(f'LOG:RESULT Bayer best for {year} = {bayes_best}')
 
-windows_size_best
+print(windows_size_best)
 
 # plot_test_result(bayes_trials.results[-1]['test_result'])
 
