@@ -69,19 +69,20 @@ if not IN_COLAB:
     config['time_dir'] = os.path.join(config['root_dir'], "result")
     config['time_dir'] = os.path.join(config['time_dir'], current_timestamp)
     
-    config['data_dir] = root_dir + 'data'
+    config['data_dir'] = root_dir + 'data'
     config['model_dir'] = os.path.join(config['time_dir'], 'model')
     config['plot_dir'] = os.path.join(config['time_dir'], 'plot')
     config['result_dir'] = os.path.join(config['time_dir'], 'result')
     # Create folder if not exists
     
-    if not os.path.exists(config['data_dir]):
-        
+    if not os.path.exists(config['data_dir']):
+        os.makedirs(config['data_dir'])
+
     if not os.path.exists(config['model_dir']):
         os.makedirs(config['model_dir'])
     
-    if not os.path.exists(config['plot_dir]'):
-        os.makedirs(config['plot_dir]')
+    if not os.path.exists(config['plot_dir']):
+        os.makedirs(config['plot_dir'])
         
     if not os.path.exists(config['result_dir']):
         os.makedirs(config['result_dir'])
@@ -91,7 +92,7 @@ else:
     
     config['time_dir'] = os.path.join(config['root_dir'], "result")
     
-    config['data_dir] = os.path.join(root_dir, "data")
+    config['data_dir'] = os.path.join(root_dir, "data")
     config['model_dir'] = os.path.join(config['time_dir'], 'model')
     config['plot_dir'] = os.path.join(config['time_dir'], 'plot')
     config['result_dir'] = os.path.join(config['time_dir'], 'result')
@@ -105,6 +106,9 @@ config['prediction_size'] = 1
 config['sample_display_test_size'] = 5
 # windows size
 config['windows_size'] = 7
+config['train_split'] = 0.7
+config['validation_split'] = 0.1
+config['test_split'] = 0.1
 
 
 pd.options.display.max_columns = 12
@@ -120,25 +124,27 @@ warnings.filterwarnings('ignore')
 # region Data Loading
 def get_data(config, stock_file_name = '000002.SS'):
     data_dir = config['data_dir']
-    data_file_path = f'{config['data_dir]}/{stock_file_name}.csv'
+    data_file_path = f'{data_dir}/{stock_file_name}.csv'
 
-    if os.path.exists(data_file)
-    df_org = yf.download(stock_name, start="2006-01-01", end="2016-10-19", interval="1d")
-    #df_org = pd.read_csv(, parse_dates=['Date'])
+    if os.path.exists(data_file_path):
+        df_org = pd.read_csv(data_file_path, parse_dates=['Date'])
+    else:
+        df_org = yf.download(stock_file_name, start="2006-01-01", end="2016-10-19", interval="1d")
+        df_org.to_csv(data_file_path)
+
+
     df_org = df_org.sort_values('Date')
-    # df_org.to_csv(f'{base_dir}/{stock_name}.csv')
     df_org.reset_index(inplace=True)
 
 def calculate_change(df, target_col_name = 'Close', change_col_name = 'Change'):
     df_change = df[target_col_name].copy()
     df_change = df_change.pct_change(periods=1, fill_method='ffill')
-        os.makedirs(config['data_dir])
     df_change = df_change.fillna(0)
 
     df[change_col_name] = df_change
 
 # region Data ploting
-def plot_ohlc(df):
+def plot_ohlc(df, stock_name):
     trace = go.Ohlc(x=df['Date'],
                     open=df['Open'],
                     high=df['High'],
@@ -180,10 +186,10 @@ def get_model(config = config):
     input_dim = config['input_dim']
     window_size = config['window_size']
     output_dim = config['output_dim']
-    lstm_neuron_count = none_to_default(config[['lstm_neuron_count'], 128)
-    lstm_layer_count = none_to_default(config[['lstm_layer_count'], 5)
-    drop_rate = none_to_default(config[['drop_rate'], 0.2)
-    stateful = none_to_default(config[['stateful'], False)
+    lstm_neuron_count = none_to_default(config['lstm_neuron_count'], 128)
+    lstm_layer_count = none_to_default(config['lstm_layer_count'], 5)
+    drop_rate = none_to_default(config['drop_rate'], 0.2)
+    stateful = none_to_default(config['stateful'], False)
     model = Sequential()
 
     model.add(LSTM(units=lstm_neuron_count, input_shape=(window_size, input_dim), return_sequences=True, stateful = stateful))
@@ -308,11 +314,14 @@ def train_model(model, X_train, y_train, save_fname):
 
 # endregion
 # %%
-def plot_test_result(df_test_result, stock_name):
+def plot_test_result(df_test_result, stock_name, config):
     # Plotly
+    output_col = config['output_col']
+    prediction_col = config['prediction_col']
+    time_col = config['time_col']
     trace0 = go.Scatter(
-        x=df_test_result['Date'],
-        y=df_test_result['Close'],
+        x=df_test_result[time_col[0]],
+        y=df_test_result[output_col[0]],
         name='Thực tế',
         line=dict(
             color=('#5042f4'),
@@ -320,8 +329,8 @@ def plot_test_result(df_test_result, stock_name):
     )
 
     trace1 = go.Scatter(
-        x=df_test_result['Date'],
-        y=df_test_result['Prediction'],
+        x=df_test_result[time_col[0]],
+        y=df_test_result[prediction_col],
         name='Dự đoán',
         line=dict(
             color=('#005b4e'),
@@ -349,22 +358,32 @@ def do_train(stock_name, config = config):
     result = {}
 
     train_split = config['train_split']
-    test_split = config['test_split']
     validation_split = config['validation_split']
+    test_split = config['test_split']
+
     df = get_data(config, stock_name)
-    df_train, df_test = train_test_split(df, test_size=0.2, shuffle=False)
+    input_col = get_df_intersect_col(df, config['input_col'])
+    output_col = get_df_intersect_col(df, config['output_col'])
+    time_col = get_df_intersect_col(df, config['time_col'])
     
+    config['input_col'] = input_col
+    config['output_col'] = output_col
+    config['time_col'] = input_col
 
-    model = get_model(input_dim, windows_size, output_dim)
+    df_train, df_test = train_test_split(df, test_size=test_split, shuffle=False)
     
-
+    model = get_model(config=config)
+    
     start = timer()
 
     # Handle data
-    scaler = MinMaxScaler(feature_range=(0, 1))
+    
+    scaler_feature_range = none_to_default(config['scaler_feature_range'], (0, 1))
+    scaler = MinMaxScaler(feature_range=scaler_feature_range)
     scaled_cols = scaler.fit(df_train[input_col])
     scaled_cols = scaler.transform(df_train[input_col])
     df_train[input_col] = scaled_cols
+    result['scaler'] = scaler
 
     X_train, y_train, time_train = preprocessing_data(df_train, windows_size, prediction_size, input_col, output_col, time_col)
 
@@ -376,47 +395,61 @@ def do_train(stock_name, config = config):
     history = train_model(model, X_train, y_train, stock_name)
 
     run_time = timer() - start
+    result['run_time'] = run_time
 
-
+    return result 
     # %%
-    df_train, df_test = train_test_split(df, test_size=0.2, shuffle=False)
+def do_test(stock_name, data, config = config):
+
+    prediction_size = config['prediction_size']
+    input_col =  config['input_col']
+    output_col =  config['output_col']
+    time_col =  config['time_col']
+
+    df = get_data(config, stock_name)
+    input_col = get_df_intersect_col(df, input_col)
+    output_col = get_df_intersect_col(df, output_col)
+    output_col = output_col[0]
+    time_col = get_df_intersect_col(df, time_col)
+
+    test_split = config['test_split']
+    df_train, df_test = train_test_split(df, test_size=test_split, shuffle=False)
+    scaler = data['scaler']
     scaled_cols = scaler.transform(df_test[input_col])
     df_test[input_col] = scaled_cols
 
-    X_test, y_test, time_test = preprocessing_data(df_test, windows_size, prediction_size, input_col, output_col, time_col)
+    X_test, y_test, time_test = preprocessing_data(df_test, config)
+    
     # Reshape data
     y_test = y_test.reshape((y_test.shape[0], y_test.shape[1]))
 
     # Test generated loss
+    model = data['model']
     y_pred = model.predict(X_test)
-    y_pred = np.repeat(y_pred, input_dim, axis=1)
+    y_pred = np.repeat(y_pred, len(input_col), axis=1)
     y_pred = scaler.inverse_transform(y_pred)[:, [0]]
     y_pred = pd.Series(y_pred.flatten())
 
-    test_result = pd.DataFrame(time_test, columns=['Date'])
-    test_result['Prediction'] = y_pred
-    test_result.set_index('Date', inplace=True)
+    df_test_result = pd.DataFrame(time_test, columns=time_col)
+    prediction_col = f'{output_col} Prediction'
+    config['prediction_col'] = prediction_col
+    df_test_result[config['prediction_col']] = y_pred
+    df_test_result.set_index(time_col[0], inplace=True)
 
-    test_result = test_result.join(df_org.set_index('Date'))
-    plot_test_result(test_result, stock_name)
+    df_test_result = df_test_result.join(df_test)
+
 
     score = model.evaluate(X_test, y_test, 10000, 1)
+    mae = mean_absolute_error(df_test_result[output_col], df_test_result[prediction_col])
+    mse = mean_squared_error(df_test_result[output_col], df_test_result[prediction_col])
+    mape = mean_absolute_percentage_error(df_test_result[output_col], df_test_result[prediction_col])
+    rrmse = relative_root_mean_square_error(df_test_result[output_col], df_test_result[prediction_col])
 
-    mae = mean_absolute_error(test_result['Close'], test_result['Prediction'])
-    mse = mean_squared_error(test_result['Close'], test_result['Prediction'])
-    mape = mean_absolute_percentage_error(test_result['Close'], test_result['Prediction'])
-    rrmse = relative_root_mean_square_error(test_result['Close'], test_result['Prediction'])
+    # write data
+    return  {'score' : score, 'mae' : mae, 'df': df_test_result, 'mse' : mse, 'mape' : mape, 'rrmse' : rrmse}
 
-    print(f'{stock_name} prediction for {prediction_size} day ahead')
-    print(f'MAE = {mae}')
-    print(f'MSE = {mse}')
-    print(f'MAPE = {mape}')
-    print(f'RRMSE = {rrmse}')
-    #loss = mape
-    loss = score
-    # write row
-
-
+def make_future_prediction(model, config, time):
+    return True
 # %%
 # Make future frame For 6 year, 3 year, 1 year, 1 month.
 
@@ -428,4 +461,7 @@ def do_train(stock_name, config = config):
 
 # Agents 
 # Stock List
-
+if __name__ == "__main__":
+    train_result = do_train('sinotec', config)
+    test_result = do_test('sinotec', train_result ,config)
+    plot_test_result(test_result['df'], 'sinotec')
