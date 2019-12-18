@@ -527,24 +527,29 @@ def make_future_prediction(model, scaler, future_step, config):
     time = df[time_col][-1:].values[0]
     stock_time = stock_calendar.valid_days(start_date=time + np.timedelta64(1, 'D'), end_date=time + np.timedelta64(future_step * 2, 'D'))
     
-    pred_res = df[input_col][-batch_size:].copy()
+    pred_res = df[input_col][-windows_size:].copy()
     pred_res[prediction_col] = pred_res[output_col]
     '''Generates the next data window from the given index location i'''
     for step in range(future_step):
         x = pred_res[input_col][-windows_size:].values
         x = scaler.transform(x)
         x = x.reshape(1, x.shape[0], x.shape[1])
-            
+
         y_pred = model.predict(x)
         y_pred = np.repeat(y_pred, len(input_col), axis=1)
         y_pred = scaler.inverse_transform(y_pred)[:, [0]][0][0]
 
-        pred_res = pred_res.append({time_col : stock_time[step], prediction_col:y_pred, output_col:np.repeat(y_pred, len(input_col), axis=1)}, ignore_index=True )
+        data_row = {time_col : stock_time[step], prediction_col:y_pred}
+        for input_col_name in input_col:
+          data_row[input_col_name] = y_pred
+
+        pred_res = pred_res.append(data_row, ignore_index=True )
 
     return pred_res
 
 def plot_furure_prediction(df, df_predict, stock_name, config):
     # Plotly
+    df = df[-10:]
     output_col = config['output_col']
     prediction_col = config['prediction_col']
     time_col = config['time_col']
@@ -585,6 +590,7 @@ def plot_furure_prediction(df, df_predict, stock_name, config):
     fig.show()
 # endregion
 
+
 # %%
 # Make future frame For 6 year, 3 year, 1 year, 1 month.
 
@@ -601,7 +607,7 @@ if __name__ == "__main__":
 
     for stock_name in stock_name_list:
         force_train = config.get('force_train', False)
-        train_result = load_model(stock_name, config)
+        train_result = load_save_model(stock_name, config)
         if train_result is None or force_train:
             train_result = do_train(stock_name, config)
         test_result = do_test(stock_name, train_result ,config)
