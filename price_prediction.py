@@ -144,6 +144,16 @@ warnings.filterwarnings('ignore')
 
 # %%
 # region Data Loading
+
+def get_all_stock_name_in_dir(dir):
+    file_list = []
+    for file in os.listdir("data"):
+        if file.endswith(".csv"):
+            file_list.append(file.partition('.')[0])
+
+    return file_list
+
+    
 def get_data(config, stock_file_name = '000002.SS'):
     data_dir = config['data_dir']
     start_time = config['start_time']
@@ -603,7 +613,8 @@ def plot_furure_prediction(df, df_predict, stock_name, config):
 # Agents 
 # Stock List
 if __name__ == "__main__":
-    stock_name_list = ['FLC']
+    data_dir = config.get('data_dir')
+    stock_name_list = get_all_stock_name_in_dir(data_dir)
 
     for stock_name in stock_name_list:
         force_train = config.get('force_train', False)
