@@ -44,6 +44,7 @@ import tensorflow.keras.backend as K
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.externals import joblib
 # Yfinance
 get_ipython().system('pip install yfinance')
 import yfinance as yf
@@ -344,11 +345,14 @@ def train_model(model, X_train, y_train, save_fname):
     return history
 
 def load_save_model(stock_name):
-    model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (save_fname))
-    if os.path.exists(model_save_fname):
-        return load_model(model_save_fname)
+    model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (stock_name))
+    scaler_save_fname = os.path.join(config['model_dir'], '%s.scaler' % (stock_name))
+    
+    if os.path.exists(model_save_fname) and os.path.exists(scaler_save_fname):
+        return {'model' : load_model(model_save_fname), 'scaler': joblib.load(scaler_save_fname)}
         
     return None
+
 # endregion
 # %%
 def plot_test_result(df_test_result, stock_name, config):
@@ -419,15 +423,19 @@ def do_train(stock_name, config = config):
     start = timer()
 
     # Handle data
-    
     scaler_feature_range = config.get('scaler_feature_range', (0, 1))
     scaler = MinMaxScaler(feature_range=scaler_feature_range)
     scaled_cols = scaler.fit(df_train[input_col])
+
+    # Save scaler
+    scaler_save_fname = os.path.join(config['model_dir'], '%s.scaler' % (stock_name))
+    joblib.dump(scaler, scaler_save_fname) 
+    
+    # Transform train data
     scaled_cols = scaler.transform(df_train[input_col])
     df_train[input_col] = scaled_cols
 
     X_train, y_train, time_train = preprocessing_data(df_train, config)
-
 
     # Reshape data
     y_train = y_train.reshape((y_train.shape[0], y_train.shape[1]))
@@ -520,7 +528,9 @@ def make_future_prediction(model, scaler, future_step, config):
     pred_res[prediction_col] = pred_res[output_col]
     '''Generates the next data window from the given index location i'''
     for step in range(future_step):
-        x = pred_res[input_col][-1:].values[0]
+        x = pred_res[input_col][-windows_size:].values
+        x = scaler.transform(x)
+        x = x.reshape(1, x.shape[0], x.shape[1])
             
         y_pred = model.predict(x)
         y_pred = np.repeat(y_pred, len(input_col), axis=1)
@@ -587,7 +597,10 @@ if __name__ == "__main__":
     stock_name_list = ['FLC']
 
     for stock_name in stock_name_list:
-        train_result = do_train(stock_name, config)
+        force_train = config.get('force_train', False)
+        train_result = load_model(stock_name, config)
+        if train_result is None or force_train:
+            train_result = do_train(stock_name, config)
         test_result = do_test(stock_name, train_result ,config)
         
         future_predict = make_future_prediction(train_result['model'], train_result['scaler'] ,10, config)
