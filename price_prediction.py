@@ -52,6 +52,9 @@ import yfinance as yf
 get_ipython().system('pip install pandas_market_calendars')
 import pandas_market_calendars as mcal
 
+get_ipython().system('pip install joblib')
+import joblib
+
 # endregion
 
 
@@ -344,7 +347,7 @@ def train_model(model, X_train, y_train, save_fname):
     
     return history
 
-def load_save_model(stock_name):
+def load_save_model(stock_name, config):
     model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (stock_name))
     scaler_save_fname = os.path.join(config['model_dir'], '%s.scaler' % (stock_name))
     
