@@ -122,8 +122,8 @@ config['stateful'] = True
 config['scaler_feature_range'] = (0, 1)
 
 # train
-config['epochs'] = 2
-config['batch_size'] = 1
+config['epochs'] = 200
+config['batch_size'] = 8
 config['start_time'] = datetime(2006, 1, 1, 0, 0)
 config['end_time'] = datetime(2016, 11, 13, 0, 0) 
 
@@ -142,17 +142,19 @@ def get_data(config, stock_file_name = '000002.SS'):
     data_dir = config['data_dir']
     start_time = config['start_time']
     end_time = config['end_time']
+    time_col = config['time_col']
+    time_col = time_col[0]
     data_file_path = f'{data_dir}/{stock_file_name}.csv'
 
     if os.path.exists(data_file_path):
-        df_org = pd.read_csv(data_file_path, parse_dates=['Date'])
-        df_org = df_org[np.logical_and(df_org['Date'].dt.to_pydatetime() >= config['start_time'], df_org['Date'].dt.to_pydatetime() <= config['end_time'])]
+        df_org = pd.read_csv(data_file_path, parse_dates=[time_col])
+        df_org = df_org[np.logical_and(df_org[time_col].dt.to_pydatetime() >= config['start_time'], df_org[time_col].dt.to_pydatetime() <= config['end_time'])]
     else:
         df_org = yf.download(stock_file_name, interval="1d")
         df_org.to_csv(data_file_path)
 
 
-    df_org = df_org.sort_values('Date')
+    df_org = df_org.sort_values(time_col)
     df_org.reset_index(inplace=True)
 
     return df_org
@@ -218,15 +220,17 @@ def get_model(config = config):
     stateful = none_to_default(config['stateful'], False)
     batch_size = config['batch_size']
     model = Sequential()
-
-    model.add(LSTM(units=lstm_neuron_count, batch_input_shape=(batch_size, windows_size, input_dim), return_sequences=True, stateful = stateful))
-    model.add(Dropout(rate=drop_rate))
+    
+    if stateful:
+      model.add(LSTM(units=lstm_neuron_count, input_shape=(windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
+    else:
+      model.add(LSTM(units=lstm_neuron_count, batch_input_shape=(batch_size, windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
 
     for i in range(lstm_layer_count - 2):
-        model.add(LSTM(units=lstm_neuron_count, return_sequences=True, stateful = stateful))
+        model.add(LSTM(units=lstm_neuron_count, return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
         model.add(Dropout(rate=drop_rate))
     
-    model.add(LSTM(units=lstm_neuron_count, return_sequences=False, stateful = stateful))
+    model.add(LSTM(units=lstm_neuron_count, return_sequences=False, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
     model.add(Dropout(rate=drop_rate))
     model.add(Dense(output_dim, activation='linear'))
     opt = optimizers.Adam(lr=0.05, beta_1=0.99, beta_2=0.999)
@@ -315,8 +319,8 @@ def preprocessing_data(df, config = config):
 def train_model(model, X_train, y_train, save_fname):
     model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (save_fname))
     callbacks = [
-        EarlyStopping(monitor='val_loss', patience=20),
-        ModelCheckpoint(filepath=model_save_fname, monitor='val_loss', save_best_only=True)
+        EarlyStopping(monitor='loss', patience=100),
+        ModelCheckpoint(filepath=model_save_fname, monitor='loss', save_best_only=True)
     ]
     epochs = none_to_default(config['epochs'], 1000)
     batch_size = none_to_default(config['batch_size'], 1000)
@@ -376,7 +380,9 @@ def plot_test_result(df_test_result, stock_name, config):
                   )
 
     fig = go.Figure(data=data, layout=layout)
+    plot_dir = config['plot_dir']
     fig.show()
+    fig.write_html(os.path.join(plot_dir, '%s_test.html' % (stock_name)), auto_open=False)
 # endregion
 
 # Region do main thing
@@ -479,12 +485,23 @@ def do_test(stock_name, data, config = config):
     mape = mean_absolute_percentage_error(df_test_result[output_col], df_test_result[prediction_col])
     rrmse = relative_root_mean_square_error(df_test_result[output_col], df_test_result[prediction_col])
 
+    # File to save first results\n
+    result_dir = config['result_dir']
+    result_save_fname = os.path.join(result_dir, 'result_%s.csv' % (stock_name))
+    of_connection = open(result_save_fname, 'w')
+    writer = csv.writer(of_connection)
+    # Write the headers to the file\n
+    writer.writerow(['stock_name', 'score', 'mae', 'mse', 'mape', 'rrmse', 'time_stamp'])
+    writer.writerow([stock_name, score, mae, mse, mape, rrmse, datetime.now().strftime('%d%m%Y_%H%M%S')])
+    of_connection.close()
     # write data
     return  {'score' : score, 'mae' : mae, 'df': df_test_result, 'mse' : mse, 'mape' : mape, 'rrmse' : rrmse}
 
-def make_future_prediction(model, df, scaler, future_step, config):
+def make_future_prediction(model, scaler, future_step, config):
+    df = get_data(config, stock_name)
     windows_size = config['windows_size']
     input_col = config['input_col']
+    output_col = config['output_col']
     time_col = config['time_col']
     prediction_col = config['prediction_col']
 
@@ -495,22 +512,69 @@ def make_future_prediction(model, df, scaler, future_step, config):
     stock_calendar = mcal.get_calendar('stock')
     time = df[time_col][-1:].values[0]
     stock_time = stock_calendar.valid_days(start_date=time + np.timedelta64(1, 'D'), end_date=time + np.timedelta64(future_step * 2, 'D'))
-    pred_res = pd.DataFrame([], columns=[time_col, prediction_col])
+    
+    pred_res = df[input_col][-windows_size:].copy()
+    pred_res[prediction_col] = pred_res[output_col]
     '''Generates the next data window from the given index location i'''
     for step in range(future_step):
-      
-        x = df[input_col][-batch_size:]
-        
-        x = x.values
+        x = pred_res[input_col][-windows_size:].values
         x = scaler.transform(x)
-        x = np.reshape(x, (batch_size, x.shape[0], x.shape[1]))
+        x = x.reshape(1, x.shape[0], x.shape[1])
+
         y_pred = model.predict(x)
         y_pred = np.repeat(y_pred, len(input_col), axis=1)
         y_pred = scaler.inverse_transform(y_pred)[:, [0]][0][0]
 
-        pred_res = pred_res.append({time_col : stock_time[step], prediction_col:y_pred}, ignore_index=True )
+        data_row = {time_col : stock_time[step], prediction_col:y_pred}
+        for input_col_name in input_col:
+          data_row[input_col_name] = y_pred
+
+        pred_res = pred_res.append(data_row, ignore_index=True )
 
     return pred_res
+
+def plot_furure_prediction(df, df_predict, stock_name, config):
+    # Plotly
+    output_col = config['output_col']
+    prediction_col = config['prediction_col']
+    time_col = config['time_col']
+    time_col = time_col[0]
+    trace0 = go.Scatter(
+        x=df.index,
+        y=df[output_col[0]],
+        name='Thực tế',
+        line=dict(
+            color=('#5042f4'),
+            width=2)
+    )
+
+    trace1 = go.Scatter(
+        x=df_predict[time_col],
+        y=df_predict[prediction_col],
+        name='Dự đoán',
+        line=dict(
+            color=('#005b4e'),
+            width=2,
+            dash='dot'
+        )  # dash options include 'dash', 'dot', and 'dashdot'
+    )
+
+    data = [trace0, trace1]
+
+    # Edit the layout
+    layout = dict(title='Biểu đồ dự đoán',
+                  xaxis=dict(title='Date'),
+                  yaxis=dict(title='Price'),
+                  paper_bgcolor='#FFF9F5',
+                  plot_bgcolor='#FFF9F5'
+                  )
+
+    fig = go.Figure(data=data, layout=layout)
+    plot_dir = config["plot_dir"]
+    fig.write_html(os.path.join(plot_dir, '%s_predict.html' % (stock_name)), auto_open=False)
+    fig.show()
+# endregion
+
 # %%
 # Make future frame For 6 year, 3 year, 1 year, 1 month.
 
@@ -523,8 +587,18 @@ def make_future_prediction(model, df, scaler, future_step, config):
 # Agents 
 # Stock List
 if __name__ == "__main__":
-    train_result = do_train('600028', config)
-    test_result = do_test('600028', train_result ,config)
-    future_predict = make_future_prediction(test_result['model'], df, 10, config)
-    plot_test_result(test_result['df'], '600028', config)
-    plot_furure_prediction(test_result['df'], future_predict,'600028', config)
+    stock_name_list = ['600028', '000002']
+
+    for stock_name in stock_name_list:
+        train_result = do_train(stock_name, config)
+        test_result = do_test(stock_name, train_result ,config)
+        
+        future_predict = make_future_prediction(train_result['model'], train_result['scaler'] ,10, config)
+        plot_test_result(test_result['df'], stock_name, config)
+        plot_furure_prediction(test_result['df'], future_predict, stock_name, config)
+
+        result_dir = config['result_dir']
+        future_pred_file_path = f'{result_dir}/{stock_name}_pred.csv'
+        future_predict.to_csv(future_pred_file_path)
+
+        
