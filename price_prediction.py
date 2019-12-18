@@ -38,6 +38,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.initializers import random_normal, Ones 
 from tensorflow.keras.layers import LSTM, Dropout, Input, Dense
 from tensorflow.keras.models import Model
+from tensorflow.keras.models import load_model
 import tensorflow.keras.backend as K
 # SKLearn
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -100,15 +101,15 @@ else:
     config['plot_dir'] = os.path.join(config['time_dir'], 'plot')
     config['result_dir'] = os.path.join(config['time_dir'], 'result')
 
-config['input_col'] = ['Close', 'Open', 'High', 'Low', 'Previous Close']
-config['output_col'] = ['Close']
-config['time_col'] = ['Date']
+config['input_col'] = ['<Close>', '<Open>', '<High>', '<Low>']
+config['output_col'] = ['<Close>']
+config['time_col'] = ['<DTYYYYMMDD>']
 # Number of session to prediction as one time
 config['prediction_size'] = 1
 # For each time model is train, the first is display
 config['sample_display_test_size'] = 5
 # windows size
-config['windows_size'] = 1
+config['windows_size'] = 5
 config['train_split'] = 0.7
 config['validation_split'] = 0.1
 config['test_split'] = 0.2
@@ -116,14 +117,14 @@ config['test_split'] = 0.2
 config['lstm_neuron_count'] = 128
 config['lstm_layer_count'] = 5
 config['drop_rate'] = 0.2
-config['stateful'] = True
+config['stateful'] = False
 
 # data normalize
 config['scaler_feature_range'] = (0, 1)
 
 # train
 config['epochs'] = 200
-config['batch_size'] = 8
+config['batch_size'] = 5
 config['start_time'] = datetime(2006, 1, 1, 0, 0)
 config['end_time'] = datetime(2016, 11, 13, 0, 0) 
 config['force_train'] = False
@@ -149,7 +150,7 @@ def get_data(config, stock_file_name = '000002.SS'):
 
     if os.path.exists(data_file_path):
         df_org = pd.read_csv(data_file_path, parse_dates=[time_col])
-        df_org = df_org[np.logical_and(df_org[time_col].dt.to_pydatetime() >= config['start_time'], df_org[time_col].dt.to_pydatetime() <= config['end_time'])]
+        # df_org = df_org[np.logical_and(df_org[time_col].dt.to_pydatetime() >= config['start_time'], df_org[time_col].dt.to_pydatetime() <= config['end_time'])]
     else:
         df_org = yf.download(stock_file_name, interval="1d")
         df_org.to_csv(data_file_path)
@@ -223,9 +224,9 @@ def get_model(config = config):
     model = Sequential()
     
     if stateful:
-      model.add(LSTM(units=lstm_neuron_count, input_shape=(windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
-    else:
       model.add(LSTM(units=lstm_neuron_count, batch_input_shape=(batch_size, windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
+    else:
+      model.add(LSTM(units=lstm_neuron_count, input_shape=(windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
 
     for i in range(lstm_layer_count - 2):
         model.add(LSTM(units=lstm_neuron_count, return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
@@ -317,7 +318,6 @@ def preprocessing_data(df, config = config):
 # %%
 # region Model train
 # Trainning model
-def load_model(model):
 def train_model(model, X_train, y_train, save_fname):
     model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (save_fname))
     callbacks = [
@@ -343,7 +343,12 @@ def train_model(model, X_train, y_train, save_fname):
     
     return history
 
-
+def load_save_model(stock_name):
+    model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (save_fname))
+    if os.path.exists(model_save_fname):
+        return load_model(model_save_fname)
+        
+    return None
 # endregion
 # %%
 def plot_test_result(df_test_result, stock_name, config):
@@ -420,7 +425,6 @@ def do_train(stock_name, config = config):
     scaled_cols = scaler.fit(df_train[input_col])
     scaled_cols = scaler.transform(df_train[input_col])
     df_train[input_col] = scaled_cols
-    result['scaler'] = scaler
 
     X_train, y_train, time_train = preprocessing_data(df_train, config)
 
@@ -430,13 +434,10 @@ def do_train(stock_name, config = config):
 
     # Perform n_train
     history = train_model(model, X_train, y_train, stock_name)
-    result['history'] = history
-    result['model'] = model
     
     run_time = timer() - start
-    result['run_time'] = run_time
 
-    return result 
+    return {'scaler' : scaler, 'model' : model, 'history' : history, 'run_time' : run_time} 
     # %%
 def do_test(stock_name, data, config = config):
 
@@ -583,7 +584,7 @@ def plot_furure_prediction(df, df_predict, stock_name, config):
 # Agents 
 # Stock List
 if __name__ == "__main__":
-    stock_name_list = ['FLC', 'ITA']
+    stock_name_list = ['FLC']
 
     for stock_name in stock_name_list:
         train_result = do_train(stock_name, config)
