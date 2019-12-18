@@ -70,7 +70,7 @@ if not IN_COLAB:
     config['root_dir'] = ""
     
     config['time_dir'] = os.path.join(config['root_dir'], "result")
-    config['time_dir'] = os.path.join(config['time_dir'], current_timestamp)
+    config['time_dir'] = os.path.join(config['time_dir'], '')
     
     config['data_dir'] = os.path.join(config['root_dir'], 'data')
     config['model_dir'] = os.path.join(config['time_dir'], 'model')
@@ -126,6 +126,7 @@ config['epochs'] = 200
 config['batch_size'] = 8
 config['start_time'] = datetime(2006, 1, 1, 0, 0)
 config['end_time'] = datetime(2016, 11, 13, 0, 0) 
+config['force_train'] = False
 
 pd.options.display.max_columns = 12
 pd.options.display.max_rows = 24
@@ -222,15 +223,15 @@ def get_model(config = config):
     model = Sequential()
     
     if stateful:
-      model.add(LSTM(units=lstm_neuron_count, input_shape=(windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
+      model.add(LSTM(units=lstm_neuron_count, input_shape=(windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
     else:
-      model.add(LSTM(units=lstm_neuron_count, batch_input_shape=(batch_size, windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
+      model.add(LSTM(units=lstm_neuron_count, batch_input_shape=(batch_size, windows_size, input_dim), return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
 
     for i in range(lstm_layer_count - 2):
-        model.add(LSTM(units=lstm_neuron_count, return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
+        model.add(LSTM(units=lstm_neuron_count, return_sequences=True, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
         model.add(Dropout(rate=drop_rate))
     
-    model.add(LSTM(units=lstm_neuron_count, return_sequences=False, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate)))
+    model.add(LSTM(units=lstm_neuron_count, return_sequences=False, stateful = stateful, dropout=drop_rate, recurrent_dropout=drop_rate))
     model.add(Dropout(rate=drop_rate))
     model.add(Dense(output_dim, activation='linear'))
     opt = optimizers.Adam(lr=0.05, beta_1=0.99, beta_2=0.999)
@@ -316,6 +317,7 @@ def preprocessing_data(df, config = config):
 # %%
 # region Model train
 # Trainning model
+def load_model(model):
 def train_model(model, X_train, y_train, save_fname):
     model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (save_fname))
     callbacks = [
@@ -413,7 +415,7 @@ def do_train(stock_name, config = config):
 
     # Handle data
     
-    scaler_feature_range = none_to_default(config['scaler_feature_range'], (0, 1))
+    scaler_feature_range = config.get('scaler_feature_range', (0, 1))
     scaler = MinMaxScaler(feature_range=scaler_feature_range)
     scaled_cols = scaler.fit(df_train[input_col])
     scaled_cols = scaler.transform(df_train[input_col])
@@ -513,23 +515,17 @@ def make_future_prediction(model, scaler, future_step, config):
     time = df[time_col][-1:].values[0]
     stock_time = stock_calendar.valid_days(start_date=time + np.timedelta64(1, 'D'), end_date=time + np.timedelta64(future_step * 2, 'D'))
     
-    pred_res = df[input_col][-windows_size:].copy()
+    pred_res = df[input_col][-batch_size:].copy()
     pred_res[prediction_col] = pred_res[output_col]
     '''Generates the next data window from the given index location i'''
     for step in range(future_step):
-        x = pred_res[input_col][-windows_size:].values
-        x = scaler.transform(x)
-        x = x.reshape(1, x.shape[0], x.shape[1])
-
+        x = pred_res[input_col][-1:].values[0]
+            
         y_pred = model.predict(x)
         y_pred = np.repeat(y_pred, len(input_col), axis=1)
         y_pred = scaler.inverse_transform(y_pred)[:, [0]][0][0]
 
-        data_row = {time_col : stock_time[step], prediction_col:y_pred}
-        for input_col_name in input_col:
-          data_row[input_col_name] = y_pred
-
-        pred_res = pred_res.append(data_row, ignore_index=True )
+        pred_res = pred_res.append({time_col : stock_time[step], prediction_col:y_pred, output_col:np.repeat(y_pred, len(input_col), axis=1)}, ignore_index=True )
 
     return pred_res
 
@@ -587,7 +583,7 @@ def plot_furure_prediction(df, df_predict, stock_name, config):
 # Agents 
 # Stock List
 if __name__ == "__main__":
-    stock_name_list = ['600028', '000002']
+    stock_name_list = ['FLC', 'ITA']
 
     for stock_name in stock_name_list:
         train_result = do_train(stock_name, config)
