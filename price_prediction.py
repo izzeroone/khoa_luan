@@ -54,6 +54,11 @@ import pandas_market_calendars as mcal
 
 get_ipython().system('pip install joblib')
 import joblib
+# Hyperopt bayesian optimization
+get_ipython().system('pip install hyperopt')
+from hyperopt import hp, Trials, tpe, fmin, STATUS_OK, partial
+
+import json
 
 # endregion
 
@@ -133,6 +138,16 @@ config['start_time'] = datetime(2006, 1, 1, 0, 0)
 config['end_time'] = datetime(2016, 11, 13, 0, 0) 
 config['force_train'] = False
 
+# bayesian
+config['force_train'] = False
+config['param_grid'] = {
+        'windows_size': hp.choice('windows_size', np.arange(1, 8, dtype=int)),
+        'drop_rate': hp.quniform('drop_rate', 0.2, 0.4, 1),
+        'lstm_layer_count' : hp.choice('lstm_layer_count', np.arange(3, 7, dtype=int)),
+        'lstm_neuron_count' : hp.choice('lstm_neuron_count', np.arange(64, 128, dtype=int))
+    }
+config['bayer_max_evals'] = 10
+
 pd.options.display.max_columns = 12
 pd.options.display.max_rows = 24
 
@@ -147,7 +162,7 @@ warnings.filterwarnings('ignore')
 
 def get_all_stock_name_in_dir(dir):
     file_list = []
-    for file in os.listdir("data"):
+    for file in os.listdir(dir):
         if file.endswith(".csv"):
             file_list.append(file.partition('.')[0])
 
@@ -333,16 +348,18 @@ def preprocessing_data(df, config = config):
 # region Model train
 # Trainning model
 def train_model(model, X_train, y_train, save_fname):
-    model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (save_fname))
+    model_save_checkpoint_fname = os.path.join(config['model_dir'], '%s-e{epoch:02d}.h5' % (save_fname))
     callbacks = [
-        EarlyStopping(monitor='loss', patience=100),
-        ModelCheckpoint(filepath=model_save_fname, monitor='loss', save_best_only=True)
+        EarlyStopping(monitor='loss', patience=100)
     ]
     epochs = none_to_default(config['epochs'], 1000)
     batch_size = none_to_default(config['batch_size'], 1000)
     train_split = none_to_default(config['train_split'], 0.7)
     validation_split = none_to_default(config['validation_split'], 0.1)
-
+    save_model = config.get('save_model', True)
+    if save_model:
+        callbacks.append(ModelCheckpoint(filepath=model_save_checkpoint_fname, monitor='loss', save_best_only=True))
+        
     history = model.fit(
         X_train,
         y_train,
@@ -353,7 +370,9 @@ def train_model(model, X_train, y_train, save_fname):
         callbacks=callbacks,
         shuffle=False)
 
-    model.save(model_save_fname)
+    if save_model:
+        model_save_fname = os.path.join(config['model_dir'], '%s.h5' % (save_fname))
+        model.save(model_save_fname)
     
     return history
 
@@ -425,6 +444,7 @@ def do_train(stock_name, config = config):
     config['input_col'] = input_col
     config['output_col'] = output_col
     config['time_col'] = time_col
+    time_col = time_col[0]
     config['input_dim'] = len(input_col)
     config['output_dim'] = len(output_col)
     
@@ -458,6 +478,12 @@ def do_train(stock_name, config = config):
     
     run_time = timer() - start
 
+    # Save last train time
+    last_train_time_path = os.path.join(config['model_dir'], '%slast_train.txt' % (stock_name))
+    with open(last_train_time_path, 'w') as outfile:
+        json.dump(df_train[time_col][-1:].values[0], outfile)
+
+
     return {'scaler' : scaler, 'model' : model, 'history' : history, 'run_time' : run_time} 
     # %%
 def do_test(stock_name, data, config = config):
@@ -469,10 +495,7 @@ def do_test(stock_name, data, config = config):
     batch_size =  config['batch_size']
     
     df = get_data(config, stock_name)
-    input_col = get_df_intersect_col(df, input_col)
-    output_col = get_df_intersect_col(df, output_col)
     output_col = output_col[0]
-    time_col = get_df_intersect_col(df, time_col)
     time_col =  time_col[0]
     df_org = df[[output_col, time_col]].copy()
 
@@ -600,7 +623,104 @@ def plot_furure_prediction(df, df_predict, stock_name, config):
     fig.show()
 # endregion
 
+# Hyper parameter tuning
+def objective(params, df):
+    # Make sure windows_size is int
+    config['windows_size'] = int(params['windows_size'])
+    config['drop_rate'] = params['drop_rate']
+    config['lstm_layer_count'] = int(params['lstm_layer_count'])
+    config['lstm_neuron_count'] = int(params['lstm_neuron_count'])
+    test_split = config.get('test_split')
+    input_col = config['input_col']
+    output_col = config['output_col']
+    time_col = config['time_col']
 
+    df_train, df_test = train_test_split(df, test_size=test_split, shuffle=False)
+    model = get_model(config=config)
+    
+    start = timer()
+
+    # Handle data
+    scaler_feature_range = config.get('scaler_feature_range', (0, 1))
+    scaler = MinMaxScaler(feature_range=scaler_feature_range)
+    scaled_cols = scaler.fit(df_train[input_col])
+    
+    # Transform train data
+    scaled_cols = scaler.transform(df_train[input_col])
+    df_train[input_col] = scaled_cols
+
+    X_train, y_train, time_train = preprocessing_data(df_train, config)
+
+    # Reshape data
+    y_train = y_train.reshape((y_train.shape[0], y_train.shape[1]))
+
+    # Perform n_train
+    history = train_model(model, X_train, y_train, stock_name)
+    
+    run_time = timer() - start
+
+
+    # Transform test data
+    scaled_cols = scaler.transform(df_test[input_col])
+    df_test[input_col] = scaled_cols
+
+    X_test, y_test, time_train = preprocessing_data(df_test, config)
+
+    # Reshape data
+    y_test = y_test.reshape((y_test.shape[0], y_test.shape[1]))
+
+    score = model.evaluate(X_test, y_test, 10000, 8)
+    loss = score
+
+    # Dictionary with information for evaluation
+    return {'loss': loss, 'params': params,
+            'train_time': run_time, 'status': STATUS_OK}
+
+def config_column(stock_name, config):
+    df = get_data(config, stock_name)
+
+    input_col = get_df_intersect_col(df, config['input_col'])
+    output_col = get_df_intersect_col(df, config['output_col'])
+    time_col = get_df_intersect_col(df, config['time_col'])
+    
+    config['input_col'] = input_col
+    config['output_col'] = output_col
+    config['time_col'] = time_col
+    config['input_dim'] = len(input_col)
+    config['output_dim'] = len(output_col)
+
+def load_hyper_parameter(stock_name, config):
+    param_file_path = os.path.join(config['model_dir'], '%sparam.txt' % (stock_name))
+    if os.path.exists(param_file_path):
+        with open('data.txt', 'r') as outfile:
+            b = json.load(outfile)
+            return b
+    else:
+        return None
+
+def tune_hyper_parameter(stock_name, config):
+    bayer_max_evals = config.get('bayer_max_evals', 100)
+    param_grid = config.get('param_grid')
+
+    df = get_data(config, stock_name)
+
+    df, _  = train_test_split(df, train_size=0.15)
+
+    # Hyperparameter grid
+    bayes_trials = Trials()
+
+    # Create the algorithm
+    bayes_algo = tpe.suggest
+
+    fmin_objective = partial(objective, df=df)
+
+    bayes_best = fmin(fn=fmin_objective, space=param_grid,
+                      algo=bayes_algo, trials=bayes_trials,
+                      max_evals=bayer_max_evals)
+
+    param_file_path = os.path.join(config['model_dir'], '%sparam.txt' % (stock_name))
+    with open('data.txt', 'w') as outfile:
+        json.dump(bayes_best, outfile)
 # %%
 # Make future frame For 6 year, 3 year, 1 year, 1 month.
 
@@ -618,6 +738,20 @@ if __name__ == "__main__":
 
     for stock_name in stock_name_list:
         force_train = config.get('force_train', False)
+        config_column(stock_name, config)
+        parameter = load_hyper_parameter(stock_name, config)
+        if parameter is None:
+            config['save_model'] = False
+            tune_hyper_parameter(stock_name, config)
+            parameter = load_hyper_parameter(stock_name, config)
+
+        config['windows_size'] = int(parameter['windows_size'])
+        config['drop_rate'] = parameter['drop_rate']
+        config['lstm_layer_count'] = int(parameter['lstm_layer_count'])
+        config['lstm_neuron_count'] = int(parameter['lstm_neuron_count'])
+
+
+        config['save_model'] = True
         train_result = load_save_model(stock_name, config)
         if train_result is None or force_train:
             train_result = do_train(stock_name, config)
